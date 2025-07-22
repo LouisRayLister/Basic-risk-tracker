@@ -1,0 +1,103 @@
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import datetime
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import requests
+import plotly.graph_objects as go
+
+# Constants
+COMMODITIES = {
+    'Natural Gas': {'spot': 'UNG', 'futures': 'NG=F'},
+    'Crude Oil': {'spot': 'USO', 'futures': 'CL=F'},
+    'Electricity': {'spot': 'ELEX', 'futures': 'N/A'}  # Placeholder; power data is tricky
+}
+
+# Download price data
+def download_price_data(ticker, start_date, end_date):
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Adj Close']
+
+# Fetch weather data (example: temperature for a location) from Open-Meteo (no API key)
+def fetch_weather_data(start_date, end_date, latitude=40.7128, longitude=-74.0060):
+    url = f"https://archive-api.open-meteo.com/v1/archive?latitude={latitude}&longitude={longitude}&start_date={start_date}&end_date={end_date}&daily=temperature_2m_max&timezone=Europe/London"
+    r = requests.get(url)
+    r.raise_for_status()
+    weather_df = pd.DataFrame(r.json()['daily'])
+    weather_df['time'] = pd.to_datetime(weather_df['time'])
+    weather_df.set_index('time', inplace=True)
+    return weather_df['temperature_2m_max']
+
+# Prepare dataset for ML: predict next-day basis change
+def prepare_ml_dataset(data, weather):
+    df = data.copy()
+    df['Basis'] = df['Spot'] - df['Futures']
+    df['Basis_Change'] = df['Basis'].diff().shift(-1)  # next-day change
+    df = df.join(weather, how='left')
+    df.rename(columns={'temperature_2m_max': 'MaxTemp'}, inplace=True)
+    df.dropna(inplace=True)
+
+    features = ['Basis', 'Spot', 'Futures', 'MaxTemp']
+    X = df[features]
+    y = df['Basis_Change']
+    return X, y, df
+
+# Train a simple RandomForest model to predict basis change
+def train_predict_model(X, y):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    mse = mean_squared_error(y_test, preds)
+    print(f"ML Model MSE: {mse:.4f}")
+    return model, X_test.index, y_test, preds
+
+# Simulate hedging PnL based on predicted basis changes
+def simulate_hedging(data):
+    data['Hedged_PnL'] = (data['Futures'].diff().fillna(0) - data['Spot'].diff().fillna(0)).cumsum()
+    return data
+
+# Plot data and ML predictions
+def plot_all(data, y_test, preds, commodity):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data.index, y=data['Basis'], mode='lines', name='Basis'))
+    fig.add_trace(go.Scatter(x=data.index, y=data['Hedged_PnL'], mode='lines', name='Hedged PnL'))
+    fig.add_trace(go.Scatter(x=y_test.index, y=y_test, mode='markers', name='Actual Basis Change'))
+    fig.add_trace(go.Scatter(x=y_test.index, y=preds, mode='lines', name='Predicted Basis Change'))
+    fig.update_layout(title=f"{commodity} Basis Risk & ML Prediction", xaxis_title='Date', yaxis_title='Value')
+    fig.show()
+
+def main():
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=365)
+
+    # Choose commodity
+    commodity = 'Natural Gas'
+    tickers = COMMODITIES[commodity]
+
+    spot = download_price_data(tickers['spot'], start_date, end_date)
+    futures = download_price_data(tickers['futures'], start_date, end_date)
+
+    data = pd.concat([spot, futures], axis=1)
+    data.columns = ['Spot', 'Futures']
+    data.dropna(inplace=True)
+
+    # Get weather data for NY (proxy for demonstration)
+    weather = fetch_weather_data(start_date.isoformat(), end_date.isoformat())
+
+    # Prepare ML dataset
+    X, y, ml_df = prepare_ml_dataset(data, weather)
+
+    # Train model and predict
+    model, test_index, y_test, preds = train_predict_model(X, y)
+
+    # Hedging simulation
+    data = simulate_hedging(data)
+
+    # Plot results
+    plot_all(data, y_test, preds, commodity)
+
+if __name__ == "__main__":
+    main()
