@@ -1,0 +1,89 @@
+# Commodity Basis Risk Tracker with Hedging Simulation and Multi-Commodity Support
+
+import pandas as pd
+import yfinance as yf
+import plotly.graph_objects as go
+import datetime
+import numpy as np
+
+# Supported commodity tickers
+COMMODITIES = {
+    'WTI Crude': {'spot': 'USO', 'futures': 'CL=F'},
+    'Gold': {'spot': 'GLD', 'futures': 'GC=F'},
+    'Corn': {'spot': 'CORN', 'futures': 'ZC=F'},
+    'Natural Gas': {'spot': 'UNG', 'futures': 'NG=F'}
+}
+
+# Download price data using yfinance
+def download_price_data(ticker, start_date, end_date):
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Adj Close']
+
+# Compute basis (spot - futures)
+def compute_basis(spot_series, futures_series):
+    return spot_series - futures_series
+
+# Compute rolling volatility of basis
+def compute_rolling_volatility(basis_series, window=30):
+    return basis_series.rolling(window).std()
+
+# Compute rolling correlation between spot and futures
+def compute_rolling_correlation(spot_series, futures_series, window=30):
+    return spot_series.rolling(window).corr(futures_series)
+
+# Simulate hedging performance (basic hedge: 1:1 futures position)
+def simulate_hedging(data):
+    data['Hedged_PnL'] = (data['Futures'].diff().fillna(0) - data['Spot'].diff().fillna(0)).cumsum()
+    return data
+
+# Plot basis, volatility, correlation, and hedge PnL
+def plot_analytics(data, commodity_name):
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(x=data.index, y=data['Basis'], mode='lines', name='Basis'))
+    fig.add_trace(go.Scatter(x=data.index, y=data['Volatility'], mode='lines', name='Rolling Volatility'))
+    fig.add_trace(go.Scatter(x=data.index, y=data['Correlation'], mode='lines', name='Rolling Corr (Spot-Fut)'))
+    fig.add_trace(go.Scatter(x=data.index, y=data['Hedged_PnL'], mode='lines', name='Hedged PnL'))
+
+    fig.update_layout(title=f'{commodity_name} - Basis Risk Analytics & Hedge Sim',
+                      xaxis_title='Date',
+                      yaxis_title='Value',
+                      legend=dict(x=0.01, y=0.99))
+    fig.show()
+
+# Alert if basis exceeds threshold
+def check_alerts(basis_series, threshold=2.0):
+    recent_basis = basis_series.iloc[-1]
+    if abs(recent_basis) > threshold:
+        print(f"ALERT: Basis of {recent_basis:.2f} exceeds threshold of {threshold}")
+    else:
+        print(f"Basis is within normal range: {recent_basis:.2f}")
+
+# Main function to run analysis for one commodity
+def run_analysis(commodity_name):
+    tickers = COMMODITIES[commodity_name]
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=365)
+
+    spot = download_price_data(tickers['spot'], start_date, end_date)
+    futures = download_price_data(tickers['futures'], start_date, end_date)
+
+    data = pd.concat([spot, futures], axis=1)
+    data.columns = ['Spot', 'Futures']
+    data.dropna(inplace=True)
+
+    data['Basis'] = compute_basis(data['Spot'], data['Futures'])
+    data['Volatility'] = compute_rolling_volatility(data['Basis'])
+    data['Correlation'] = compute_rolling_correlation(data['Spot'], data['Futures'])
+
+    data = simulate_hedging(data)
+
+    plot_analytics(data, commodity_name)
+    check_alerts(data['Basis'])
+    data.to_csv(f"{commodity_name.replace(' ', '_').lower()}_basis_hedge_output.csv")
+
+# Run for each commodity (can replace with specific one)
+if __name__ == "__main__":
+    for commodity in COMMODITIES:
+        print(f"\n--- Analyzing {commodity} ---")
+        run_analysis(commodity)
